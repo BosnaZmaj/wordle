@@ -1,6 +1,9 @@
 # Tim's Wordle Clone
 
-Play wordle from the command line.
+Practice [Wordle](https://www.powerlanguage.co.uk/wordle/) from the command line with a random word.
+No internet required!
+
+The words come from the official app.
 
 ![Demonstration of the program](docs/demo.gif)
 
@@ -24,7 +27,6 @@ wordle
 The words used in this game come from the actual [Wordle](https://www.powerlanguage.co.uk/wordle/)
 application itself.
 
-- `solutions.txt` contains words which can be used as solutions. These are words that most people
-  would know.
-- `words.txt` contains other valid English words. These words are less common, like "fuzil",
-  "sewin", and "tolan".
+- [`solutions.txt`](wordle/solutions.txt) contains words which can be used as solutions.
+- [`words.txt`](wordle/words.txt) contains other valid English words that are recognized in tries.
+  (These words are less common like "fuzil", "sewin", and "tolan".)
