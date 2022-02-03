@@ -1,9 +1,7 @@
 # Tim's Wordle Clone
 
-Practice [Wordle](https://www.powerlanguage.co.uk/wordle/) from the command line with a random word.
-No internet required!
-
-The words come from the official app.
+Practice [Wordle](https://www.powerlanguage.co.uk/wordle/) from the command line with a random
+official word. No internet required!
 
 ![Demonstration of the program](docs/demo.gif)
 
@@ -18,7 +16,7 @@ pip install --user wordle/  # or pipx, or virtualenv, or whatever
 
 Then, run it with:
 
-```
+```shell
 wordle
 ```
 
@@ -29,4 +27,5 @@ application itself.
 
 - [`solutions.txt`](wordle/solutions.txt) contains words which can be used as solutions.
 - [`words.txt`](wordle/words.txt) contains other valid English words that are recognized in tries.
-  (These words are less common like "fuzil", "sewin", and "tolan".)
+  (These words are less common like "fuzil", "sewin", and "tolan", but are still helpful in deducing
+  solutions.)
