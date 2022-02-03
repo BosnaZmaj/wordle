@@ -1,0 +1,24 @@
+[tool.poetry]
+name = "wordle"
+version = "0.1.0"
+description = ""
+authors = ["Tim Martin <tim@timmart.in>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+rich = "^11.1.0"
+attrs = "^21.4.0"
+
+[tool.poetry.dev-dependencies]
+pylint = "^2.12.2"
+mypy = "^0.931"
+black = "^22.1.0"
+flake8 = "^4.0.1"
+isort = "^5.10.1"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+wordle = "wordle.__main__:main"
