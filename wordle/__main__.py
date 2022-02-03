@@ -4,8 +4,7 @@ from wordle.game import Game
 
 def main() -> None:
     """Create and play a game"""
-    game = Game.create()
-    game.play()
+    Game().play()
 
 
 if __name__ == "__main__":

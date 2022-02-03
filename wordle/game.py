@@ -7,10 +7,11 @@ import string
 import sys
 import time
 from collections.abc import Callable
-from typing import Literal, Optional
+from typing import Literal
 
 import attr
 from rich.align import Align
+from rich.console import RenderableType
 from rich.box import HEAVY, ROUNDED, Box
 from rich.layout import Layout
 from rich.live import Live
@@ -20,6 +21,12 @@ from rich.table import Table
 
 from wordle.getch import getch
 from wordle.words import ALL_WORDS, SOLUTIONS
+from wordle.exception import (
+    NotAWordException,
+    TooShortException,
+    FullRowException,
+    EmptyRowException,
+)
 
 DARK_GRAY = "#585858"
 LIGHT_GRAY = "#d7dadc"
@@ -32,11 +39,6 @@ NUM_ROWS = 6
 RANKS = ["Genius", "Magnificent", "Impressive", "Splendid", "Great", "Phew"]
 
 KB_ROWS = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"]
-KB_LOCATION = {
-    letter: (f"kb-row-{row_idx}", col_idx)
-    for row_idx, row in enumerate(KB_ROWS)
-    for col_idx, letter in enumerate(row)
-}
 
 STATE_ORDER = {
     state: order
@@ -46,244 +48,320 @@ STATE_ORDER = {
 StateT = Literal["empty", "filled", "absent", "present", "correct"]
 
 
-@attr.mutable(order=True)
+@attr.mutable(order=True, kw_only=True)
 class Cell:
     """A box/cell with a single letter, used in various parts of the game."""
 
-    _table: Table = attr.ib(cmp=False)
-    state: str = attr.ib(cmp=STATE_ORDER.get)
+    letter: str = attr.ib(default=" ", cmp=False)
+    state: StateT = attr.ib(default="empty", cmp=STATE_ORDER.get)
 
-    @classmethod
-    def create(cls, letter: str, state: StateT, box: Box, bold: bool) -> Cell:
-        """Return a cell with a single letter inside."""
-
+    def _renderable(self, box: Box, bold: bool) -> RenderableType:
+        """Return the rich renderable of this cell."""
         table = Table(box=box, show_header=False)
 
-        match state:
+        match self.state:
             case "empty":
-                table.border_style = Style(color=LIGHT_GRAY)
-                table.add_row(letter, style=Style(bold=bold))
+                border_style = Style(color=LIGHT_GRAY)
+                text_style = Style(bold=bold)
             case "filled":
-                table.border_style = Style(color=LIGHT_GRAY)
-                table.add_row(letter, style=Style(bold=bold))
+                border_style = Style(color=LIGHT_GRAY)
+                text_style = Style(bold=bold)
             case "absent":
-                table.border_style = Style(color=DARK_GRAY)
-                table.add_row(letter, style=Style(color=DARK_GRAY, bold=bold))
+                border_style = Style(color=DARK_GRAY)
+                text_style = Style(color=DARK_GRAY, bold=bold)
             case "present":
-                table.border_style = Style(color=YELLOW)
-                table.add_row(letter, style=Style(color=YELLOW, bold=bold))
+                border_style = Style(color=YELLOW)
+                text_style = Style(color=YELLOW, bold=bold)
             case "correct":
-                table.border_style = Style(color=GREEN)
-                table.add_row(letter, style=Style(color=GREEN, bold=bold))
+                border_style = Style(color=GREEN)
+                text_style = Style(color=GREEN, bold=bold)
 
-        return Cell(table=table, state=state)
+        table.border_style = border_style
+        table.add_row(self.letter, style=text_style)
 
-    @classmethod
-    def board(cls, letter: Optional[str] = None, state: StateT = "empty") -> Cell:
+        return table
+
+    def board_renderable(self) -> RenderableType:
         """Return a game cell with a single letter inside."""
-        if letter is None:
-            letter = " "
-        else:
-            letter = letter[:1].upper()
-        return cls.create(letter, state, HEAVY, True)
+        return self._renderable(HEAVY, True)
 
-    @classmethod
-    def keyboard(cls, letter: str, state: StateT = "empty") -> Cell:
+    def keyboard_renderable(self) -> RenderableType:
         """Return a keyboard cell."""
-        return cls.create(letter, state, ROUNDED, False)
+        return self._renderable(ROUNDED, False)
+
+    def __str__(self) -> str:
+        return self.letter
+
+
+@attr.mutable(kw_only=True)
+class BoardRow:
+    """Represents 1 row of the board."""
+
+    cells: list[Cell] = attr.ib(factory=lambda: [Cell() for _ in range(NUM_COLS)])
+    input_index: int = attr.ib(default=0)
+
+    def submit(self, solution: str) -> list[Cell]:
+        """
+        Checks these cells against the letters of solution and return if everything is
+        correct. Raises exceptions if the current word is too short or not a valid word.
+        """
+        word = str(self).rstrip()
+        if len(word) < NUM_COLS:
+            raise TooShortException()
+        if word not in ALL_WORDS:
+            raise NotAWordException()
+
+        new_cells = []
+
+        for idx, letter in enumerate(word):
+            if letter == solution[idx]:
+                new_cell = Cell(letter=letter, state="correct")
+            elif letter in solution:
+                new_cell = Cell(letter=letter, state="present")
+            else:
+                new_cell = Cell(letter=letter, state="absent")
+            new_cells.append(new_cell)
+
+        return new_cells
 
     @property
-    def letter(self) -> str:
-        """Return the letter inside this cell."""
-        # pylint: disable=protected-access
-        return self._table.columns[0]._cells[0]
+    def correct(self) -> bool:
+        """Returns if the row's cells are all correct"""
+        return all(cell.state == "correct" for cell in self.cells)
 
-    def __rich__(self) -> str:
-        """Return the rich renderable of this cell."""
-        return self._table
+    def add_letter(self, letter: str) -> None:
+        """
+        Adds a letter to the current row, if able. Raises exception if no room is left.
+        """
+
+        if self.input_index == NUM_COLS:
+            raise FullRowException()
+
+        self.cells[self.input_index] = Cell(letter=letter.upper(), state="filled")
+        self.input_index += 1
+
+    def delete_letter(self) -> None:
+        """
+        Deletes a letter from the current row, if able. Raises exception there are no
+        letters to delete.
+        """
+
+        if self.input_index == 0:
+            raise EmptyRowException()
+
+        self.input_index -= 1
+        self.cells[self.input_index] = Cell()
+
+    def __str__(self) -> str:
+        return "".join(str(cell) for cell in self.cells)
+
+
+@attr.mutable(kw_only=True)
+class Board:
+    """The area where letters are input and checked against the solution."""
+
+    rows: list[BoardRow] = attr.ib(
+        factory=lambda: [BoardRow() for _ in range(NUM_ROWS)]
+    )
+    active_row_index: int = attr.ib(default=0)
+
+    def submit(self, solution: str) -> list[Cell]:
+        """
+        Return a list of cells of the board's active row with states updated according
+        to the solution.
+        """
+        checked_cells = self.rows[self.active_row_index].submit(solution)
+        self.active_row_index += 1
+        return checked_cells
+
+    def add_letter(self, letter: str) -> None:
+        """Add a letter to the board's active row."""
+        return self.active_row.add_letter(letter)
+
+    def delete_letter(self) -> None:
+        """Delete a letter from the board's active row."""
+        return self.active_row.delete_letter()
+
+    @property
+    def active_row(self) -> BoardRow:
+        """The current row the user is inputting into."""
+        return self.rows[self.active_row_index]
+
+    @property
+    def submitted_row(self) -> BoardRow:
+        """The row the user just submitted."""
+        return self.rows[self.active_row_index - 1]
+
+    def layout(self) -> Layout:
+        """A rich layout representing this board."""
+        board = Table.grid()
+        for row in self.rows:
+            board.add_row(*(cell.board_renderable() for cell in row.cells))
+        return Layout(Align.center(board), name="board", size=3 * NUM_ROWS)
+
+
+def _default_kb_cells() -> dict[str, Cell]:
+    cells_by_letter = {}
+    for row in KB_ROWS:
+        for letter in row:
+            cells_by_letter[letter] = Cell(letter=letter)
+    return cells_by_letter
+
+
+@attr.mutable(kw_only=True)
+class Keyboard:
+    """
+    A status area that shows how each letter of the alphabet has been applied towards
+    the solution.
+    """
+
+    cells_by_letter: dict[str, Cell] = attr.ib(factory=_default_kb_cells)
+
+    def update(self, cell: Cell) -> None:
+        """Update the keyboard with the state of cell."""
+        self.cells_by_letter[cell.letter] = max(
+            cell, self.cells_by_letter[cell.letter]
+        )
+
+    def layout(self) -> Layout:
+        """A rich layout representing this keyboard."""
+        layout = Layout(size=3 * 3)
+
+        for kb_row in KB_ROWS:
+            table = Table.grid()
+            table.add_row(
+                *(
+                    self.cells_by_letter[letter].keyboard_renderable()
+                    for letter in kb_row
+                )
+            )
+            layout.add_split(Layout(Align.center(table), size=3))
+
+        return layout
+
+
+@attr.mutable(kw_only=True)
+class Status:
+    """An area to communicate messages to the user."""
+    text: str = attr.ib(
+        default=(
+            "Welcome to Wordle! Type letters to make a word, Enter to submit, and "
+            "Ctrl-C to quit."
+        )
+    )
+
+    def set(self, new_text: str) -> None:
+        """Change the status text. rich markup is supported."""
+        self.text = new_text
+
+    def clear(self) -> None:
+        """Clear the status text."""
+        self.text = ""
+
+    def layout(self) -> Layout:
+        """A rich layout representing this status."""
+        return Layout(Align.center(render(self.text)), size=1, name="status")
 
 
 @attr.mutable
 class Game:
     """Represents a board state and solution of wordle."""
 
-    _layout: Layout
-    solution: str
-    cur_row: int = attr.ib(default=0)
-    cur_col: int = attr.ib(default=0)
-
-    @classmethod
-    def create(cls, solution: Optional[str] = None) -> Game:
-        """Create a game that can be played."""
-        if solution is None:
-            solution = random.choice(SOLUTIONS)
-        assert len(solution) == NUM_COLS
-
-        layout = Layout()
-
-        board = Table.grid()
-        for _ in range(NUM_ROWS):
-            board.add_row(*[Cell.board() for _ in range(NUM_COLS)])
-
-        status = render("Start typing letters...")
-
-        top_row = Table.grid()
-        top_row.add_row(*[Cell.keyboard(let) for let in KB_ROWS[0]])
-        middle_row = Table.grid()
-        middle_row.add_row(*[Cell.keyboard(let) for let in KB_ROWS[1]])
-        bottom_row = Table.grid()
-        bottom_row.add_row(*[Cell.keyboard(let) for let in KB_ROWS[2]])
-
-        layout.split_column(
-            Layout(Align(status, "center"), name="status", size=1),
-            Layout(Align(board, "center"), name="board", size=NUM_ROWS * 3),
-            Layout(Align(top_row, "center"), name="kb-row-0", size=3),
-            Layout(Align(middle_row, "center"), name="kb-row-1", size=3),
-            Layout(Align(bottom_row, "center"), name="kb-row-2", size=3),
-        )
-
-        return Game(layout=layout, solution=solution)
-
-    @property
-    def board(self) -> Table:
-        """Convenience property to get to the board of the game"""
-        return self._layout["board"].renderable.renderable
-
-    def set_status(self, text: str) -> None:
-        """
-        Set the status text of the game. Supports markdown. Ensure refresh is called
-        after.
-        """
-        self._layout["status"].renderable.renderable = render(text)
-
-    def get_cell_letter(self, row: int, col: int) -> str:
-        """Get the letter of a cell."""
-        # pylint: disable=protected-access
-        return self.board.columns[col]._cells[row].letter
-
-    def set_board_cell(
-        self,
-        row: int,
-        col: int,
-        letter: Optional[str] = None,
-        state: StateT = "empty",
-    ) -> None:
-        """
-        Set a cell, specified by row and col, to a certain letter in a certain state.
-        """
-        # pylint: disable=protected-access
-        self.board.columns[col]._cells[row] = Cell.board(letter=letter, state=state)
-
-    def set_keyboard_cell(
-        self,
-        letter: str,
-        state: StateT,
-    ) -> None:
-        """
-        Set a keyboard cell, specified by its letter, to a certain letter in a certain
-        state.
-        """
-        # pylint: disable=protected-access
-        new_cell = Cell.keyboard(letter=letter, state=state)
-        layout_name, col_idx = KB_LOCATION[letter]
-        cells = self._layout[layout_name].renderable.renderable.columns[col_idx]._cells
-
-        if new_cell > cells[0]:
-            cells[0] = new_cell
-
-    def current_row_letters(self) -> str:
-        """Get the letters of the current row, stripped of right whitespace."""
-        word = "".join(
-            self.get_cell_letter(self.cur_row, col) for col in range(NUM_COLS)
-        )
-        return word.rstrip()
-
-    def add_letter(self, key: str, refresh_fn: Callable[[], None]) -> None:
-        """Add a letter to the current row, if able."""
-        if self.cur_col in [NUM_COLS - 1, NUM_COLS]:
-            self.set_status("Press Enter to submit")
-
-        if self.cur_col < NUM_COLS:
-            self.set_board_cell(self.cur_row, self.cur_col, key, "filled")
-            self.cur_col += 1
-
-        refresh_fn()
-
-    def delete_letter(self, refresh_fn: Callable[[], None]) -> None:
-        """Delete a letter from the current row, if able."""
-        if self.cur_col > 0:
-            self.cur_col -= 1
-            self.set_board_cell(self.cur_row, self.cur_col)
-        else:
-            self.set_status("Can't erase anymore")
-
-        refresh_fn()
+    solution: str = attr.ib(factory=lambda: random.choice(SOLUTIONS))
+    status: Status = attr.ib(factory=Status)
+    board: Board = attr.ib(factory=Board)
+    keyboard: Keyboard = attr.ib(factory=Keyboard)
 
     def submit(self, refresh_fn: Callable[[], None]) -> None:
-        """Submit the current row, if able. Word checking is done too."""
-        if self.cur_col != NUM_COLS:
-            self.set_status("Not enough letters")
-            refresh_fn()
+        """
+        Update the board's submitted row with cells that have been checked against the
+        solution. This method sleep's to create the effect of animation.
+
+        If the solution was found or attempts exhausted, display an appropriate status
+        and then quit the program.
+
+        If there's an issue, set an appropriate status.
+        """
+        try:
+            checked_cells = self.board.submit(self.solution)
+        except TooShortException:
+            self.status.set("Not enough letters")
+            return
+        except NotAWordException:
+            self.status.set("Not in word list")
             return
 
-        word = self.current_row_letters()
-        if word not in ALL_WORDS:
-            self.set_status("Not in word list")
+        for cell_idx, checked_cell in enumerate(checked_cells):
+            self.board.submitted_row.cells[cell_idx] = checked_cell
+            self.keyboard.update(checked_cell)
+            time.sleep(0.1)
             refresh_fn()
-            return
 
-        for idx, letter in enumerate(word):
-            if letter == self.solution[idx]:
-                self.set_board_cell(self.cur_row, idx, letter, "correct")
-                self.set_keyboard_cell(letter, "correct")
-            elif letter in self.solution:
-                self.set_board_cell(self.cur_row, idx, letter, "present")
-                self.set_keyboard_cell(letter, "present")
-            else:
-                self.set_board_cell(self.cur_row, idx, letter, "absent")
-                self.set_keyboard_cell(letter, "absent")
+        if self.board.submitted_row.correct:
+            self.status.set(RANKS[self.board.active_row_index - 1])
             refresh_fn()
-            if idx + 1 != NUM_COLS:
-                time.sleep(0.1)
-
-        refresh_fn()
-
-        if word == self.solution:
-            self.set_status(RANKS[self.cur_row])
-            refresh_fn()
-            time.sleep(3)
-            sys.exit(0)
-        elif self.cur_row + 1 == NUM_ROWS:
-            self.set_status(f"The solution was [red]{self.solution}[/red]")
-            refresh_fn()
-            time.sleep(3)
+            time.sleep(2)
             sys.exit(1)
-        else:
-            self.cur_col = 0
-            self.cur_row += 1
+        elif self.board.active_row_index == NUM_ROWS:
+            self.status.set(f"Correct word was [red]{self.solution}[/red]")
+            refresh_fn()
+            time.sleep(2)
+            sys.exit(1)
+
+    def add_letter(self, letter: str) -> None:
+        """Add a letter, or set an appropriate status."""
+        try:
+            self.board.add_letter(letter)
+        except FullRowException:
+            self.status.set("Press Enter to submit")
+
+    def delete_letter(self) -> None:
+        """Delete a letter, or set an appropriate status."""
+        try:
+            self.board.delete_letter()
+        except EmptyRowException:
+            self.status.set("Can't erase anymore")
 
     def handle_key(self, key: str, refresh_fn: Callable[[], None]) -> str:
         """Respond to a keypress by the user."""
-        self.set_status("")
+        self.status.clear()
+
         match key:
             case key if key == "\x03":  # ctrl-c
                 sys.exit(1)
             case key if key.upper() in string.ascii_uppercase:
-                self.add_letter(key, refresh_fn)
+                self.add_letter(key)
             case key if key == "\b":
-                self.delete_letter(refresh_fn)
+                self.delete_letter()
             case key if key in "\r\n":
                 self.submit(refresh_fn)
             case _:
-                self.set_status("Input a valid English letter")
-                refresh_fn()
+                self.status.set("Input a valid English letter")
+
+        # if no other status has been set, set to these help messages
+        if not self.status.text:
+            if (
+                self.board.active_row.input_index == 0
+                and self.board.active_row_index == 0
+            ):
+                self.status.set("Enter some letters...")
+            elif self.board.active_row.input_index == NUM_COLS:
+                self.status.set("Press Enter to submit")
 
     def play(self) -> None:
         """Play the game."""
         with Live(self, auto_refresh=False) as live:
             while True:
                 self.handle_key(key=getch(), refresh_fn=live.refresh)
+                live.refresh()
 
-    def __rich__(self) -> str:
+    def __rich__(self) -> RenderableType:
         """Return the rich renderable of this game."""
-        return self._layout
+
+        layout = Layout()
+        layout.split_column(
+            self.status.layout(),
+            self.board.layout(),
+            self.keyboard.layout(),
+        )
+        return layout
