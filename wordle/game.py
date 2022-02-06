@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import string
 import sys
 import time
@@ -11,22 +10,22 @@ from typing import Literal
 
 import attr
 from rich.align import Align
-from rich.console import RenderableType
 from rich.box import HEAVY, ROUNDED, Box
+from rich.console import RenderableType
 from rich.layout import Layout
 from rich.live import Live
 from rich.markup import render
 from rich.style import Style
 from rich.table import Table
 
-from wordle.getch import getch
-from wordle.words import ALL_WORDS, SOLUTIONS
 from wordle.exception import (
+    EmptyRowException,
+    FullRowException,
     NotAWordException,
     TooShortException,
-    FullRowException,
-    EmptyRowException,
 )
+from wordle.getch import getch
+from wordle.words import ALL_WORDS
 
 DARK_GRAY = "#585858"
 LIGHT_GRAY = "#d7dadc"
@@ -219,9 +218,7 @@ class Keyboard:
 
     def update(self, cell: Cell) -> None:
         """Update the keyboard with the state of cell."""
-        self.cells_by_letter[cell.letter] = max(
-            cell, self.cells_by_letter[cell.letter]
-        )
+        self.cells_by_letter[cell.letter] = max(cell, self.cells_by_letter[cell.letter])
 
     def layout(self) -> Layout:
         """A rich layout representing this keyboard."""
@@ -243,6 +240,7 @@ class Keyboard:
 @attr.mutable(kw_only=True)
 class Status:
     """An area to communicate messages to the user."""
+
     text: str = attr.ib(
         default=(
             "Welcome to Wordle! Type letters to make a word, Enter to submit, and "
@@ -267,7 +265,7 @@ class Status:
 class Game:
     """Represents a board state and solution of wordle."""
 
-    solution: str = attr.ib(factory=lambda: random.choice(SOLUTIONS))
+    solution: str
     status: Status = attr.ib(factory=Status)
     board: Board = attr.ib(factory=Board)
     keyboard: Keyboard = attr.ib(factory=Keyboard)

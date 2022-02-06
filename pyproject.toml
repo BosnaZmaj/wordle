@@ -8,6 +8,8 @@ authors = ["Tim Martin <tim@timmart.in>"]
 python = "^3.10"
 rich = "^11.1.0"
 attrs = "^21.4.0"
+arrow = "^1.2.2"
+click = "^8.0.3"
 
 [tool.poetry.dev-dependencies]
 pylint = "^2.12.2"
